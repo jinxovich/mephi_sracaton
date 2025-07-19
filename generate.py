@@ -72,9 +72,11 @@ LED_TYPES = [
     {"name": "Fant10", "peak": 920, "sigma": 3, "amp": 0.1},
     {"name": "Fant11", "peak": 777, "sigma": 2, "amp": 0.05},
     {"name": "Fant12", "peak": 950, "sigma": 1, "amp": 1.5},
-    {"name": "Fant13", "peak": 850, "sigma": 1, "amp": 2}
-
-
+    {"name": "Fant13", "peak": 850, "sigma": 1, "amp": 2},
+    # {"name": "Fant_UV_Blue", "peak": 410, "sigma": 5, "amp": 0.3},
+    # {"name": "Fant_Red_750", "peak": 755, "sigma": 5, "amp": 0.2},
+    # {"name": "Fant_IR_810", "peak": 810, "sigma": 5, "amp": 0.2},
+    # {"name": "Fant_IR_910", "peak": 910, "sigma": 10, "amp": 0.3}
 ]
 
 # Добавляем новые источники

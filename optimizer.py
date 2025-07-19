@@ -20,6 +20,13 @@ class SpectrumOptimizer:
         self.tolerance = tolerance
         self.target_wavelengths = self.target_spectrum["Wavelength"].values
         self.target_values = self.target_spectrum["Spectral_irradiance"].values
+        
+        # Нормализуем эталонный спектр для согласованности масштабов
+        self.target_max = self.target_values.max()
+        self.target_values_normalized = self.target_values / self.target_max
+        
+        print(f"📊 Эталонный спектр: мин={self.target_values.min():.4f}, макс={self.target_values.max():.4f}")
+        print(f"📊 После нормализации: мин={self.target_values_normalized.min():.4f}, макс={self.target_values_normalized.max():.4f}")
 
         # Нормализуем все источники
         self.normalized_sources = self._normalize_sources()
@@ -40,15 +47,29 @@ class SpectrumOptimizer:
         return np.interp(self.target_wavelengths, spectrum["Wavelength"], spectrum["Intensity"])
 
     def _calculate_error(self, combined_values):
-        """Вычисляет среднюю и максимальную относительную ошибку"""
-        relative_error = np.abs((combined_values - self.target_values) / self.target_values)
+        """Вычисляет среднюю и максимальную относительную ошибку с защитой от деления на ноль"""
+        # Используем нормализованные значения эталона
+        target_safe = np.where(np.abs(self.target_values_normalized) < 1e-10, 1e-10, self.target_values_normalized)
+        
+        # Вычисляем относительную ошибку
+        relative_error = np.abs((combined_values - self.target_values_normalized) / target_safe)
+        
+        # Дополнительная проверка на аномально большие ошибки
+        relative_error = np.where(relative_error > 100, 100, relative_error)
+        
         mean_error = np.mean(relative_error)
         max_error = np.max(relative_error)
+        
         return mean_error, max_error
 
     def _calculate_local_error(self, combined_values):
         """Возвращает DataFrame с ошибкой по каждой длине волны"""
-        error = np.abs((combined_values - self.target_values) / self.target_values) * 100
+        target_safe = np.where(np.abs(self.target_values_normalized) < 1e-10, 1e-10, self.target_values_normalized)
+        error = np.abs((combined_values - self.target_values_normalized) / target_safe) * 100
+        
+        # Ограничиваем максимальную ошибку для визуализации
+        error = np.where(error > 1000, 1000, error)
+        
         return pd.DataFrame({
             "Wavelength": self.target_wavelengths,
             "Error (%)": error
@@ -57,7 +78,17 @@ class SpectrumOptimizer:
     def _calculate_correlation(self, source):
         """Возвращает корреляцию между источником и эталоном"""
         interp = self._interpolate_spectrum(source["spectrum"])
-        return np.corrcoef(interp, self.target_values)[0, 1]
+        
+        # Проверяем на NaN и константные значения
+        if np.all(interp == 0) or np.all(self.target_values_normalized == self.target_values_normalized[0]):
+            return 0
+        
+        try:
+            corr_matrix = np.corrcoef(interp, self.target_values_normalized)
+            correlation = corr_matrix[0, 1]
+            return correlation if not np.isnan(correlation) else 0
+        except:
+            return 0
 
     def _add_source_to_combo(self, current_combo):
         """Добавляет один новый источник к текущей комбинации"""
@@ -75,7 +106,7 @@ class SpectrumOptimizer:
             ])
 
             try:
-                coefficients, _ = nnls(A, self.target_values)
+                coefficients, residual = nnls(A, self.target_values_normalized)
                 combined_values = A @ coefficients
                 mean_error, max_error = self._calculate_error(combined_values)
 
@@ -86,6 +117,7 @@ class SpectrumOptimizer:
                     best_spectrum = combined_values
 
             except Exception as e:
+                print(f"⚠️ Ошибка при обработке источника {source['name']}: {e}")
                 continue
 
         return best_source, best_coefficients, best_error, best_spectrum
@@ -97,7 +129,19 @@ class SpectrumOptimizer:
         print("\nНачинаем улучшенный жадный поиск...")
 
         # Сортируем источники по корреляции с эталоном
-        ranked_sources = sorted(self.normalized_sources, key=self._calculate_correlation, reverse=True)
+        print("🔍 Ранжируем источники по корреляции...")
+        correlations = []
+        for source in self.normalized_sources:
+            corr = self._calculate_correlation(source)
+            correlations.append((source, corr))
+            
+        # Выводим топ-10 источников по корреляции
+        correlations.sort(key=lambda x: x[1], reverse=True)
+        print("📈 Топ-10 источников по корреляции с эталоном:")
+        for i, (source, corr) in enumerate(correlations[:10]):
+            print(f"  {i+1}. {source['name']}: {corr:.4f}")
+        
+        ranked_sources = [item[0] for item in correlations]
 
         current_combo = []
         best_error = float('inf')
@@ -122,7 +166,7 @@ class SpectrumOptimizer:
                 ])
 
                 try:
-                    coefficients, _ = nnls(A, self.target_values)
+                    coefficients, residual = nnls(A, self.target_values_normalized)
                     combined_values = A @ coefficients
                     mean_error, max_error = self._calculate_error(combined_values)
 
@@ -161,18 +205,26 @@ class SpectrumOptimizer:
                     "Wavelength": self.target_wavelengths,
                     "Spectral_irradiance": np.zeros_like(self.target_values)
                 }),
-                "error_by_wavelength": self._calculate_local_error(np.zeros_like(self.target_values))
+                "error_by_wavelength": self._calculate_local_error(np.zeros_like(self.target_values_normalized))
             }
+
+        # Восстанавливаем исходный масштаб для результата
+        best_spectrum_rescaled = best_spectrum * self.target_max
 
         combined_spectrum = pd.DataFrame({
             "Wavelength": self.target_wavelengths,
-            "Spectral_irradiance": best_spectrum
+            "Spectral_irradiance": best_spectrum_rescaled
         })
 
         error_by_wavelength = self._calculate_local_error(best_spectrum)
 
         # Оставляем только те коэффициенты, которые соответствуют текущей комбинации
         final_coefficients = best_coefficients[:len(current_combo)]
+        
+        print(f"\n📊 Финальная статистика:")
+        print(f"   Средняя ошибка: {self._calculate_error(best_spectrum)[0]:.4f}")
+        print(f"   Максимальная ошибка: {best_error:.4f}")
+        print(f"   Количество источников: {len(current_combo)}")
 
         return {
             "sources": current_combo,
